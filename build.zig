@@ -28,6 +28,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    _ = b.addModule("zig_zip", .{
+        .root_source_file = b.path("src/root.zig"),
+    });
+
     // Now, we will create a static library based on the module we created above.
     // This creates a `std.Build.Step.Compile`, which is the build step responsible
     // for actually invoking the compiler.
