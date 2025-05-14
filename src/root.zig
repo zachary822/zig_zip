@@ -49,7 +49,7 @@ pub const ZipFile = struct {
             .signature = std.zip.local_file_header_sig,
             .version_needed_to_extract = 20,
             .flags = .{ .encrypted = false, ._ = 0 },
-            .compression_method = .deflate,
+            .compression_method = options.compression_method,
             .last_modification_time = self.last_modification_time,
             .last_modification_date = self.last_modification_date,
             .crc32 = std.hash.Crc32.hash(content),
@@ -73,8 +73,6 @@ pub const ZipFile = struct {
             .deflate => {
                 var compress_buffer = std.ArrayList(u8).init(self.allocator);
                 defer compress_buffer.deinit();
-                var compress_buffer2 = std.ArrayList(u8).init(self.allocator);
-                defer compress_buffer2.deinit();
 
                 var content_stream = std.io.fixedBufferStream(content);
                 try std.compress.flate.compress(content_stream.reader(), compress_buffer.writer(), .{});
