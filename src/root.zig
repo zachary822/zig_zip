@@ -25,7 +25,7 @@ pub const ZipFile = struct {
         return .{
             .allocator = allocator,
             .last_modification_time = @intCast((local.*.tm_hour << 11) | (local.*.tm_min << 5) | @divFloor(local.*.tm_sec, 2)),
-            .last_modification_date = @intCast((local.*.tm_year - 80 << 9) | (local.*.tm_mon << 5) | local.*.tm_mday),
+            .last_modification_date = @intCast((local.*.tm_year - 80 << 9) | (local.*.tm_mon + 1 << 5) | local.*.tm_mday),
             .output_buff = std.ArrayList(u8).init(allocator),
             .cd_list = std.ArrayList(std.zip.CentralDirectoryFileHeader).init(allocator),
             .filenames = std.ArrayList([]const u8).init(allocator),
@@ -142,7 +142,8 @@ test "can init/deinit" {
     var f = ZipFile.init(std.testing.allocator);
     defer f.deinit();
 
-    try f.addFile("yay.txt", "hmm", .{ .compression_method = .deflate });
+    try f.addFile("test1.txt", "test1 content", .{ .compression_method = .deflate });
+    try f.addFile("test2.txt", "test2 content", .{ .compression_method = .store });
     try f.finish();
 
     var file = try std.fs.cwd().createFile("test.zip", .{});
