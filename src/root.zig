@@ -104,7 +104,7 @@ pub const ZipFile = struct {
             .comment_len = 0,
             .disk_number = 0,
             .internal_file_attributes = 0,
-            .external_file_attributes = 0,
+            .external_file_attributes = 0o644 << 16,
             .local_file_header_offset = local_file_header_offset,
         };
 
