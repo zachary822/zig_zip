@@ -4,18 +4,25 @@ const c = @cImport({
 });
 const testing = std.testing;
 
+pub const ZipFileError = error{
+    ZipFileFinished,
+    UnsupportedCompressionMethod,
+};
+
 pub const ZipFile = struct {
     allocator: std.mem.Allocator,
     last_modification_time: u16,
     last_modification_date: u16,
     output_buff: std.ArrayList(u8),
-    cd_list: std.ArrayList(std.zip.CentralDirectoryFileHeader),
-    filenames: std.ArrayList([]const u8),
+    cd_buff: std.ArrayList(u8),
+    file_count: usize = 0,
+    finished: bool = false,
 
     const Self = @This();
 
     const Options = struct {
         compression_method: std.zip.CompressionMethod = .deflate,
+        mode: std.fs.File.Mode = 0o644,
     };
 
     pub fn init(allocator: std.mem.Allocator) Self {
@@ -27,22 +34,20 @@ pub const ZipFile = struct {
             .last_modification_time = @intCast((local.*.tm_hour << 11) | (local.*.tm_min << 5) | @divFloor(local.*.tm_sec, 2)),
             .last_modification_date = @intCast((local.*.tm_year - 80 << 9) | (local.*.tm_mon + 1 << 5) | local.*.tm_mday),
             .output_buff = std.ArrayList(u8).init(allocator),
-            .cd_list = std.ArrayList(std.zip.CentralDirectoryFileHeader).init(allocator),
-            .filenames = std.ArrayList([]const u8).init(allocator),
+            .cd_buff = std.ArrayList(u8).init(allocator),
         };
     }
 
     pub fn deinit(self: Self) void {
         self.output_buff.deinit();
-        self.cd_list.deinit();
-
-        for (self.filenames.items) |name| {
-            self.allocator.free(name);
-        }
-        self.filenames.deinit();
+        self.cd_buff.deinit();
     }
 
     pub fn addFile(self: *Self, name: []const u8, content: []const u8, options: Options) !void {
+        if (self.finished) {
+            return ZipFileError.ZipFileFinished;
+        }
+
         const local_file_header_offset: u32 = @intCast(self.output_buff.items.len);
 
         var local_header = std.zip.LocalFileHeader{
@@ -58,8 +63,6 @@ pub const ZipFile = struct {
             .filename_len = @intCast(name.len),
             .extra_len = 0,
         };
-
-        try self.filenames.append(try self.allocator.dupe(u8, name));
 
         const writer = self.output_buff.writer();
 
@@ -84,7 +87,7 @@ pub const ZipFile = struct {
                 try writer.writeAll(compress_buffer.items);
             },
             else => {
-                return error.UnsupportedCompressionMethod;
+                return ZipFileError.UnsupportedCompressionMethod;
             },
         }
 
@@ -104,37 +107,41 @@ pub const ZipFile = struct {
             .comment_len = 0,
             .disk_number = 0,
             .internal_file_attributes = 0,
-            .external_file_attributes = 0o644 << 16,
+            .external_file_attributes = @as(u32, @intCast(options.mode)) << 16,
             .local_file_header_offset = local_file_header_offset,
         };
 
-        try self.cd_list.append(cd_header);
+        const cd_writer = self.cd_buff.writer();
+
+        try cd_writer.writeStructEndian(cd_header, .little);
+        try cd_writer.writeAll(name);
+        self.file_count += 1;
     }
 
     pub fn finish(self: *Self) !void {
+        if (self.finished) {
+            return;
+        }
+
         const writer = self.output_buff.writer();
 
         const cdh_offset = self.output_buff.items.len;
 
-        for (self.cd_list.items, self.filenames.items) |cd, name| {
-            try writer.writeStructEndian(cd, .little);
-            try writer.writeAll(name);
-        }
-
-        const cdh_size = self.output_buff.items.len - cdh_offset;
+        try writer.writeAll(self.cd_buff.items);
 
         const eocd = std.zip.EndRecord{
             .signature = std.zip.end_record_sig,
             .disk_number = 0,
             .central_directory_disk_number = 0,
-            .record_count_disk = @intCast(self.filenames.items.len),
-            .record_count_total = @intCast(self.filenames.items.len),
-            .central_directory_size = @intCast(cdh_size),
+            .record_count_disk = @intCast(self.file_count),
+            .record_count_total = @intCast(self.file_count),
+            .central_directory_size = @intCast(self.cd_buff.items.len),
             .central_directory_offset = @intCast(cdh_offset),
             .comment_len = 0,
         };
 
         try writer.writeStructEndian(eocd, .little);
+        self.finished = true;
     }
 };
 
@@ -152,4 +159,13 @@ test "can init/deinit" {
     var writer = buffered.writer();
     try writer.writeAll(f.output_buff.items);
     try buffered.flush();
+}
+
+test "cannot add file to finished zip archive" {
+    var f = ZipFile.init(std.testing.allocator);
+    defer f.deinit();
+
+    try f.finish();
+
+    try testing.expectError(ZipFileError.ZipFileFinished, f.addFile("bad.txt", "bad file", .{}));
 }
