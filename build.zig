@@ -30,6 +30,8 @@ pub fn build(b: *std.Build) void {
 
     _ = b.addModule("zig_zip", .{
         .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
     // Now, we will create a static library based on the module we created above.
