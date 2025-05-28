@@ -22,7 +22,7 @@ pub const ZipFile = struct {
 
     const Options = struct {
         compression_method: std.zip.CompressionMethod = .deflate,
-        mode: std.fs.File.Mode = 0o644,
+        mode: std.fs.File.Mode = 0o644 | std.c.S.IFREG,
     };
 
     pub fn init(allocator: std.mem.Allocator) Self {
