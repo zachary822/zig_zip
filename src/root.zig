@@ -27,12 +27,13 @@ pub const ZipFile = struct {
 
     pub fn init(allocator: std.mem.Allocator) Self {
         const now = c.time(null);
-        const local = c.localtime(&now);
+        var local: c.tm = undefined;
+        _ = c.localtime_r(&now, &local);
 
         return .{
             .allocator = allocator,
-            .last_modification_time = @intCast((local.*.tm_hour << 11) | (local.*.tm_min << 5) | @divFloor(local.*.tm_sec, 2)),
-            .last_modification_date = @intCast((local.*.tm_year - 80 << 9) | (local.*.tm_mon + 1 << 5) | local.*.tm_mday),
+            .last_modification_time = @intCast((local.tm_hour << 11) | (local.tm_min << 5) | @divFloor(local.tm_sec, 2)),
+            .last_modification_date = @intCast((local.tm_year - 80 << 9) | (local.tm_mon + 1 << 5) | local.tm_mday),
             .output_buff = std.ArrayList(u8).init(allocator),
             .cd_buff = std.ArrayList(u8).init(allocator),
         };
