@@ -109,7 +109,6 @@ pub const ZipFile = struct {
                     ret = c.deflate(&strm, c.Z_FINISH);
                     std.debug.assert(ret != c.Z_STREAM_ERROR);
                     const have = CHUNK - strm.avail_out;
-                    std.debug.print("have {} {x}\n", .{ have, out[0..have] });
 
                     try compress_buffer.appendSlice(out[0..have]);
 
