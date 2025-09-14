@@ -1,20 +1,26 @@
 const std = @import("std");
 const c = @cImport({
     @cInclude("time.h");
+    @cInclude("zlib.h");
 });
 const testing = std.testing;
+
+pub const std_options: std.Options = .{};
 
 pub const ZipFileError = error{
     ZipFileFinished,
     UnsupportedCompressionMethod,
+    DeflateCompressionFailed,
 };
+
+const CHUNK = 16384;
 
 pub const ZipFile = struct {
     allocator: std.mem.Allocator,
     last_modification_time: u16,
     last_modification_date: u16,
-    output_buff: std.ArrayList(u8),
-    cd_buff: std.ArrayList(u8),
+    output_buff: std.array_list.Managed(u8),
+    cd_buff: std.array_list.Managed(u8),
     file_count: usize = 0,
     finished: bool = false,
 
@@ -34,8 +40,8 @@ pub const ZipFile = struct {
             .allocator = allocator,
             .last_modification_time = @intCast((local.tm_hour << 11) | (local.tm_min << 5) | @divFloor(local.tm_sec, 2)),
             .last_modification_date = @intCast((local.tm_year - 80 << 9) | (local.tm_mon + 1 << 5) | local.tm_mday),
-            .output_buff = std.ArrayList(u8).init(allocator),
-            .cd_buff = std.ArrayList(u8).init(allocator),
+            .output_buff = std.array_list.Managed(u8).init(allocator),
+            .cd_buff = std.array_list.Managed(u8).init(allocator),
         };
     }
 
@@ -75,11 +81,45 @@ pub const ZipFile = struct {
                 try writer.writeAll(content);
             },
             .deflate => {
-                var compress_buffer = std.ArrayList(u8).init(self.allocator);
+                var compress_buffer = std.array_list.Managed(u8).init(self.allocator);
                 defer compress_buffer.deinit();
 
-                var content_stream = std.io.fixedBufferStream(content);
-                try std.compress.flate.compress(content_stream.reader(), compress_buffer.writer(), .{});
+                var strm: c.z_stream = undefined;
+                strm.zalloc = @ptrFromInt(c.Z_NULL);
+                strm.zfree = @ptrFromInt(c.Z_NULL);
+                strm.@"opaque" = @ptrFromInt(c.Z_NULL);
+
+                var out: [CHUNK]u8 = undefined;
+                var ret: c_int = 0;
+
+                ret = c.deflateInit2(&strm, c.Z_DEFAULT_COMPRESSION, c.Z_DEFLATED, -c.MAX_WBITS, 8, c.Z_DEFAULT_STRATEGY);
+                defer _ = c.deflateEnd(&strm);
+
+                if (ret != c.Z_OK) {
+                    std.log.err("zlib error code: {}", .{ret});
+                    return ZipFileError.DeflateCompressionFailed;
+                }
+
+                strm.avail_in = @intCast(content.len);
+                strm.next_in = @constCast(content.ptr);
+
+                while (true) {
+                    strm.avail_out = CHUNK;
+                    strm.next_out = &out;
+                    ret = c.deflate(&strm, c.Z_FINISH);
+                    std.debug.assert(ret != c.Z_STREAM_ERROR);
+                    const have = CHUNK - strm.avail_out;
+                    std.debug.print("have {} {x}\n", .{ have, out[0..have] });
+
+                    try compress_buffer.appendSlice(out[0..have]);
+
+                    if (strm.avail_out == 0) {
+                        continue;
+                    }
+
+                    break;
+                }
+                std.debug.assert(ret == c.Z_STREAM_END);
 
                 local_header.compressed_size = @intCast(compress_buffer.items.len);
 
@@ -150,16 +190,17 @@ test "can init/deinit" {
     var f = ZipFile.init(std.testing.allocator);
     defer f.deinit();
 
-    try f.addFile("test1.txt", "test1 content", .{ .compression_method = .deflate });
-    try f.addFile("test2.txt", "test2 content", .{ .compression_method = .store });
+    try f.addFile("test1.txt", "test1 content\n", .{ .compression_method = .deflate });
+    try f.addFile("test2.txt", "test2 content\n", .{ .compression_method = .store });
     try f.finish();
 
     var file = try std.fs.cwd().createFile("test.zip", .{});
     defer file.close();
-    var buffered = std.io.bufferedWriter(file.writer());
-    var writer = buffered.writer();
+    var buffer: [4096]u8 = undefined;
+    var buffered = file.writer(&buffer);
+    const writer = &buffered.interface;
     try writer.writeAll(f.output_buff.items);
-    try buffered.flush();
+    try writer.flush();
 }
 
 test "cannot add file to finished zip archive" {

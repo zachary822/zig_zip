@@ -28,6 +28,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    lib_mod.linkSystemLibrary("zlib", .{});
+
     _ = b.addModule("zig_zip", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
