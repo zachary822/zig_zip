@@ -2,8 +2,10 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("time.h");
     @cInclude("zlib.h");
+    @cInclude("bzlib.h");
 });
 const testing = std.testing;
+const assert = std.debug.assert;
 
 pub const std_options: std.Options = .{};
 
@@ -11,9 +13,57 @@ pub const ZipFileError = error{
     ZipFileFinished,
     UnsupportedCompressionMethod,
     DeflateCompressionFailed,
+    Bzip2CompressionFailed,
+    LZMACompressionFailed,
 };
 
 const CHUNK = 16384;
+
+pub const CompressionMethod = enum(u16) {
+    store = 0,
+    deflate = 8,
+    bzip2 = 12,
+    _,
+};
+
+const GeneralPurposeFlags = packed struct(u16) {
+    encrypted: bool,
+    _: u15,
+};
+
+pub const LocalFileHeader = extern struct {
+    signature: [4]u8 align(1),
+    version_needed_to_extract: u16 align(1),
+    flags: GeneralPurposeFlags align(1),
+    compression_method: CompressionMethod align(1),
+    last_modification_time: u16 align(1),
+    last_modification_date: u16 align(1),
+    crc32: u32 align(1),
+    compressed_size: u32 align(1),
+    uncompressed_size: u32 align(1),
+    filename_len: u16 align(1),
+    extra_len: u16 align(1),
+};
+
+pub const CentralDirectoryFileHeader = extern struct {
+    signature: [4]u8 align(1),
+    version_made_by: u16 align(1),
+    version_needed_to_extract: u16 align(1),
+    flags: GeneralPurposeFlags align(1),
+    compression_method: CompressionMethod align(1),
+    last_modification_time: u16 align(1),
+    last_modification_date: u16 align(1),
+    crc32: u32 align(1),
+    compressed_size: u32 align(1),
+    uncompressed_size: u32 align(1),
+    filename_len: u16 align(1),
+    extra_len: u16 align(1),
+    comment_len: u16 align(1),
+    disk_number: u16 align(1),
+    internal_file_attributes: u16 align(1),
+    external_file_attributes: u32 align(1),
+    local_file_header_offset: u32 align(1),
+};
 
 pub const ZipFile = struct {
     allocator: std.mem.Allocator,
@@ -27,7 +77,7 @@ pub const ZipFile = struct {
     const Self = @This();
 
     const Options = struct {
-        compression_method: std.zip.CompressionMethod = .deflate,
+        compression_method: CompressionMethod = .deflate,
         mode: std.fs.File.Mode = 0o644 | std.c.S.IFREG,
     };
 
@@ -57,7 +107,7 @@ pub const ZipFile = struct {
 
         const local_file_header_offset: u32 = @intCast(self.output_buff.items.len);
 
-        var local_header = std.zip.LocalFileHeader{
+        var local_header = LocalFileHeader{
             .signature = std.zip.local_file_header_sig,
             .version_needed_to_extract = 20,
             .flags = .{ .encrypted = false, ._ = 0 },
@@ -107,7 +157,7 @@ pub const ZipFile = struct {
                     strm.avail_out = CHUNK;
                     strm.next_out = &out;
                     ret = c.deflate(&strm, c.Z_FINISH);
-                    std.debug.assert(ret != c.Z_STREAM_ERROR);
+                    assert(ret != c.Z_STREAM_ERROR);
                     const have = CHUNK - strm.avail_out;
 
                     try compress_buffer.appendSlice(out[0..have]);
@@ -118,7 +168,51 @@ pub const ZipFile = struct {
 
                     break;
                 }
-                std.debug.assert(ret == c.Z_STREAM_END);
+                assert(ret == c.Z_STREAM_END);
+
+                local_header.compressed_size = @intCast(compress_buffer.items.len);
+
+                try writer.writeStructEndian(local_header, .little);
+                try writer.writeAll(name);
+                try writer.writeAll(compress_buffer.items);
+            },
+            .bzip2 => {
+                var compress_buffer = std.array_list.Managed(u8).init(self.allocator);
+                defer compress_buffer.deinit();
+
+                var strm: c.bz_stream = undefined;
+                strm.bzalloc = null;
+                strm.bzfree = null;
+                strm.@"opaque" = null;
+
+                var out: [CHUNK]u8 = undefined;
+                var ret: c_int = 0;
+                ret = c.BZ2_bzCompressInit(&strm, 9, 0, 30);
+                defer _ = c.BZ2_bzCompressEnd(&strm);
+
+                if (ret != c.BZ_OK) {
+                    return ZipFileError.Bzip2CompressionFailed;
+                }
+
+                strm.avail_in = @intCast(content.len);
+                strm.next_in = @constCast(content.ptr);
+
+                while (true) {
+                    strm.avail_out = CHUNK;
+                    strm.next_out = &out;
+                    ret = c.BZ2_bzCompress(&strm, c.BZ_FINISH);
+                    assert(ret != c.BZ_SEQUENCE_ERROR);
+
+                    const have = CHUNK - strm.avail_out;
+
+                    try compress_buffer.appendSlice(out[0..have]);
+
+                    if (ret != c.BZ_STREAM_END) {
+                        continue;
+                    }
+
+                    break;
+                }
 
                 local_header.compressed_size = @intCast(compress_buffer.items.len);
 
@@ -131,7 +225,7 @@ pub const ZipFile = struct {
             },
         }
 
-        const cd_header = std.zip.CentralDirectoryFileHeader{
+        const cd_header = CentralDirectoryFileHeader{
             .signature = std.zip.central_file_header_sig,
             .version_made_by = 0x0314,
             .version_needed_to_extract = local_header.version_needed_to_extract,
@@ -189,8 +283,10 @@ test "can init/deinit" {
     var f = ZipFile.init(std.testing.allocator);
     defer f.deinit();
 
-    try f.addFile("test1.txt", "test1 content\n", .{ .compression_method = .deflate });
-    try f.addFile("test2.txt", "test2 content\n", .{ .compression_method = .store });
+    try f.addFile("test1.txt", "deflate content\n", .{ .compression_method = .deflate });
+    try f.addFile("test2.txt", "store content\n", .{ .compression_method = .store });
+    try f.addFile("test3.txt", "bzip2 content\n", .{ .compression_method = .bzip2 });
+    try f.addFile("test4.txt", "lzma content\n", .{ .compression_method = .lzma });
     try f.finish();
 
     var file = try std.fs.cwd().createFile("test.zip", .{});
