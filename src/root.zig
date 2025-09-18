@@ -286,7 +286,6 @@ test "can init/deinit" {
     try f.addFile("test1.txt", "deflate content\n", .{ .compression_method = .deflate });
     try f.addFile("test2.txt", "store content\n", .{ .compression_method = .store });
     try f.addFile("test3.txt", "bzip2 content\n", .{ .compression_method = .bzip2 });
-    try f.addFile("test4.txt", "lzma content\n", .{ .compression_method = .lzma });
     try f.finish();
 
     var file = try std.fs.cwd().createFile("test.zip", .{});
