@@ -15,6 +15,7 @@ pub const ZipFileError = error{
     UnsupportedCompressionMethod,
     DeflateCompressionFailed,
     Bzip2CompressionFailed,
+    ZstdCompressionFailed,
     LZMACompressionFailed,
 };
 
@@ -25,6 +26,7 @@ pub const CompressionMethod = enum(u16) {
     deflate = 8,
     bzip2 = 12,
     lzma = 14,
+    xz = 95,
     _,
 };
 
@@ -239,6 +241,11 @@ pub const ZipFile = struct {
 
                 var out: [CHUNK]u8 = undefined;
                 var ret: c.lzma_ret = c.lzma_raw_encoder(&strm, &filters);
+                defer _ = c.lzma_end(&strm);
+
+                if (ret != c.LZMA_OK) {
+                    return ZipFileError.LZMACompressionFailed;
+                }
 
                 strm.avail_in = content.len;
                 strm.next_in = content.ptr;
@@ -275,6 +282,44 @@ pub const ZipFile = struct {
                 try writer.writeByte(@intCast(c.LZMA_VERSION_MINOR));
                 try writer.writeAll(&@as([2]u8, @bitCast(std.mem.nativeToLittle(u16, @intCast(propery_size)))));
                 try writer.writeAll(lzma_props);
+                try writer.writeAll(compress_buffer.items);
+            },
+            .xz => {
+                var compress_buffer = std.array_list.Managed(u8).init(self.allocator);
+                defer compress_buffer.deinit();
+
+                var strm: c.lzma_stream = .{};
+                var out: [CHUNK]u8 = undefined;
+                var ret: c.lzma_ret = c.lzma_easy_encoder(&strm, c.LZMA_PRESET_DEFAULT, c.LZMA_CHECK_CRC64);
+                defer _ = c.lzma_end(&strm);
+                if (ret != c.LZMA_OK) {
+                    return ZipFileError.LZMACompressionFailed;
+                }
+
+                strm.avail_in = content.len;
+                strm.next_in = content.ptr;
+
+                while (true) {
+                    strm.next_out = &out;
+                    strm.avail_out = CHUNK;
+
+                    ret = c.lzma_code(&strm, c.LZMA_FINISH);
+
+                    const have = CHUNK - strm.avail_out;
+
+                    try compress_buffer.appendSlice(out[0..have]);
+
+                    if (ret != c.LZMA_STREAM_END) {
+                        continue;
+                    }
+
+                    break;
+                }
+
+                local_header.compressed_size = @intCast(compress_buffer.items.len);
+
+                try writer.writeStructEndian(local_header, .little);
+                try writer.writeAll(name);
                 try writer.writeAll(compress_buffer.items);
             },
             else => {
@@ -344,6 +389,7 @@ test "can init/deinit" {
     try f.addFile("test2.txt", "store content\n", .{ .compression_method = .store });
     try f.addFile("test3.txt", "bzip2 content\n", .{ .compression_method = .bzip2 });
     try f.addFile("test4.txt", "lzma content\n", .{ .compression_method = .lzma });
+    try f.addFile("test5.txt", "xz content\n", .{ .compression_method = .xz });
     try f.finish();
 
     var file = try std.fs.cwd().createFile("test.zip", .{});
