@@ -3,6 +3,7 @@ const c = @cImport({
     @cInclude("time.h");
     @cInclude("zlib.h");
     @cInclude("bzlib.h");
+    @cInclude("lzma.h");
 });
 const testing = std.testing;
 const assert = std.debug.assert;
@@ -23,6 +24,7 @@ pub const CompressionMethod = enum(u16) {
     store = 0,
     deflate = 8,
     bzip2 = 12,
+    lzma = 14,
     _,
 };
 
@@ -220,6 +222,61 @@ pub const ZipFile = struct {
                 try writer.writeAll(name);
                 try writer.writeAll(compress_buffer.items);
             },
+            .lzma => {
+                var compress_buffer = std.array_list.Managed(u8).init(self.allocator);
+                defer compress_buffer.deinit();
+
+                var options_lzma: c.lzma_options_lzma = undefined;
+                if (c.lzma_lzma_preset(&options_lzma, c.LZMA_PRESET_DEFAULT) != 0) {
+                    return ZipFileError.LZMACompressionFailed;
+                }
+
+                var strm: c.lzma_stream = .{};
+                const filters = [_]c.lzma_filter{
+                    .{ .id = c.LZMA_FILTER_LZMA1, .options = &options_lzma },
+                    .{ .id = c.LZMA_VLI_UNKNOWN, .options = null },
+                };
+
+                var out: [CHUNK]u8 = undefined;
+                var ret: c.lzma_ret = c.lzma_raw_encoder(&strm, &filters);
+
+                strm.avail_in = content.len;
+                strm.next_in = content.ptr;
+
+                while (true) {
+                    strm.next_out = &out;
+                    strm.avail_out = CHUNK;
+
+                    ret = c.lzma_code(&strm, c.LZMA_FINISH);
+
+                    const have = CHUNK - strm.avail_out;
+
+                    try compress_buffer.appendSlice(out[0..have]);
+
+                    if (ret != c.LZMA_STREAM_END) {
+                        continue;
+                    }
+
+                    break;
+                }
+
+                local_header.compressed_size = @as(u32, @intCast(compress_buffer.items.len)) + 9;
+
+                try writer.writeStructEndian(local_header, .little);
+                try writer.writeAll(name);
+
+                var propery_size: u32 = undefined;
+                _ = c.lzma_properties_size(&propery_size, &filters);
+                const lzma_props = try self.allocator.alloc(u8, propery_size);
+                defer self.allocator.free(lzma_props);
+                _ = c.lzma_properties_encode(&filters, lzma_props.ptr);
+
+                try writer.writeByte(@intCast(c.LZMA_VERSION_MAJOR));
+                try writer.writeByte(@intCast(c.LZMA_VERSION_MINOR));
+                try writer.writeAll(&@as([2]u8, @bitCast(std.mem.nativeToLittle(u16, @intCast(propery_size)))));
+                try writer.writeAll(lzma_props);
+                try writer.writeAll(compress_buffer.items);
+            },
             else => {
                 return ZipFileError.UnsupportedCompressionMethod;
             },
@@ -286,6 +343,7 @@ test "can init/deinit" {
     try f.addFile("test1.txt", "deflate content\n", .{ .compression_method = .deflate });
     try f.addFile("test2.txt", "store content\n", .{ .compression_method = .store });
     try f.addFile("test3.txt", "bzip2 content\n", .{ .compression_method = .bzip2 });
+    try f.addFile("test4.txt", "lzma content\n", .{ .compression_method = .lzma });
     try f.finish();
 
     var file = try std.fs.cwd().createFile("test.zip", .{});
