@@ -267,20 +267,25 @@ pub const ZipFile = struct {
                     break;
                 }
 
-                local_header.compressed_size = @as(u32, @intCast(compress_buffer.items.len)) + 9;
+                var propery_size: u32 = undefined;
+                ret = c.lzma_properties_size(&propery_size, &filters);
+                if (ret != c.LZMA_OK) {
+                    return ZipFileError.LZMACompressionFailed;
+                }
+                const lzma_props = try self.allocator.alloc(u8, propery_size);
+                defer self.allocator.free(lzma_props);
+                ret = c.lzma_properties_encode(&filters, lzma_props.ptr);
+                if (ret != c.LZMA_OK) {
+                    return ZipFileError.LZMACompressionFailed;
+                }
+
+                local_header.compressed_size = @as(u32, @intCast(compress_buffer.items.len)) + 4 + propery_size;
 
                 try writer.writeStructEndian(local_header, .little);
                 try writer.writeAll(name);
-
-                var propery_size: u32 = undefined;
-                _ = c.lzma_properties_size(&propery_size, &filters);
-                const lzma_props = try self.allocator.alloc(u8, propery_size);
-                defer self.allocator.free(lzma_props);
-                _ = c.lzma_properties_encode(&filters, lzma_props.ptr);
-
                 try writer.writeByte(@intCast(c.LZMA_VERSION_MAJOR));
                 try writer.writeByte(@intCast(c.LZMA_VERSION_MINOR));
-                try writer.writeAll(&@as([2]u8, @bitCast(std.mem.nativeToLittle(u16, @intCast(propery_size)))));
+                try writer.writeInt(u16, @intCast(propery_size), .little);
                 try writer.writeAll(lzma_props);
                 try writer.writeAll(compress_buffer.items);
             },
