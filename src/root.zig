@@ -73,8 +73,8 @@ pub const ZipFile = struct {
     allocator: std.mem.Allocator,
     last_modification_time: u16,
     last_modification_date: u16,
-    output_buff: std.array_list.Managed(u8),
-    cd_buff: std.array_list.Managed(u8),
+    output_buff: std.ArrayList(u8),
+    cd_buff: std.ArrayList(u8),
     file_count: usize = 0,
     finished: bool = false,
 
@@ -94,14 +94,14 @@ pub const ZipFile = struct {
             .allocator = allocator,
             .last_modification_time = @intCast((local.tm_hour << 11) | (local.tm_min << 5) | @divFloor(local.tm_sec, 2)),
             .last_modification_date = @intCast((local.tm_year - 80 << 9) | (local.tm_mon + 1 << 5) | local.tm_mday),
-            .output_buff = std.array_list.Managed(u8).init(allocator),
-            .cd_buff = std.array_list.Managed(u8).init(allocator),
+            .output_buff = .empty,
+            .cd_buff = .empty,
         };
     }
 
-    pub fn deinit(self: Self) void {
-        self.output_buff.deinit();
-        self.cd_buff.deinit();
+    pub fn deinit(self: *Self) void {
+        self.output_buff.deinit(self.allocator);
+        self.cd_buff.deinit(self.allocator);
     }
 
     pub fn addFile(self: *Self, name: []const u8, content: []const u8, options: Options) !void {
@@ -125,7 +125,7 @@ pub const ZipFile = struct {
             .extra_len = 0,
         };
 
-        const writer = self.output_buff.writer();
+        const writer = self.output_buff.writer(self.allocator);
 
         switch (options.compression_method) {
             .store => {
@@ -135,8 +135,8 @@ pub const ZipFile = struct {
                 try writer.writeAll(content);
             },
             .deflate => {
-                var compress_buffer = std.array_list.Managed(u8).init(self.allocator);
-                defer compress_buffer.deinit();
+                var compress_buffer: std.ArrayList(u8) = .empty;
+                defer compress_buffer.deinit(self.allocator);
 
                 var strm: c.z_stream = undefined;
                 strm.zalloc = @ptrFromInt(c.Z_NULL);
@@ -164,7 +164,7 @@ pub const ZipFile = struct {
                     assert(ret != c.Z_STREAM_ERROR);
                     const have = CHUNK - strm.avail_out;
 
-                    try compress_buffer.appendSlice(out[0..have]);
+                    try compress_buffer.appendSlice(self.allocator, out[0..have]);
 
                     if (strm.avail_out == 0) {
                         continue;
@@ -181,8 +181,8 @@ pub const ZipFile = struct {
                 try writer.writeAll(compress_buffer.items);
             },
             .bzip2 => {
-                var compress_buffer = std.array_list.Managed(u8).init(self.allocator);
-                defer compress_buffer.deinit();
+                var compress_buffer: std.ArrayList(u8) = .empty;
+                defer compress_buffer.deinit(self.allocator);
 
                 var strm: c.bz_stream = undefined;
                 strm.bzalloc = null;
@@ -209,7 +209,7 @@ pub const ZipFile = struct {
 
                     const have = CHUNK - strm.avail_out;
 
-                    try compress_buffer.appendSlice(out[0..have]);
+                    try compress_buffer.appendSlice(self.allocator, out[0..have]);
 
                     if (ret != c.BZ_STREAM_END) {
                         continue;
@@ -225,8 +225,8 @@ pub const ZipFile = struct {
                 try writer.writeAll(compress_buffer.items);
             },
             .lzma => {
-                var compress_buffer = std.array_list.Managed(u8).init(self.allocator);
-                defer compress_buffer.deinit();
+                var compress_buffer: std.ArrayList(u8) = .empty;
+                defer compress_buffer.deinit(self.allocator);
 
                 var options_lzma: c.lzma_options_lzma = undefined;
                 if (c.lzma_lzma_preset(&options_lzma, c.LZMA_PRESET_DEFAULT) != 0) {
@@ -258,7 +258,7 @@ pub const ZipFile = struct {
 
                     const have = CHUNK - strm.avail_out;
 
-                    try compress_buffer.appendSlice(out[0..have]);
+                    try compress_buffer.appendSlice(self.allocator, out[0..have]);
 
                     if (ret != c.LZMA_STREAM_END) {
                         continue;
@@ -290,8 +290,8 @@ pub const ZipFile = struct {
                 try writer.writeAll(compress_buffer.items);
             },
             .xz => {
-                var compress_buffer = std.array_list.Managed(u8).init(self.allocator);
-                defer compress_buffer.deinit();
+                var compress_buffer: std.ArrayList(u8) = .empty;
+                defer compress_buffer.deinit(self.allocator);
 
                 var strm: c.lzma_stream = .{};
                 var out: [CHUNK]u8 = undefined;
@@ -312,7 +312,7 @@ pub const ZipFile = struct {
 
                     const have = CHUNK - strm.avail_out;
 
-                    try compress_buffer.appendSlice(out[0..have]);
+                    try compress_buffer.appendSlice(self.allocator, out[0..have]);
 
                     if (ret != c.LZMA_STREAM_END) {
                         continue;
@@ -352,7 +352,7 @@ pub const ZipFile = struct {
             .local_file_header_offset = local_file_header_offset,
         };
 
-        const cd_writer = self.cd_buff.writer();
+        const cd_writer = self.cd_buff.writer(self.allocator);
 
         try cd_writer.writeStructEndian(cd_header, .little);
         try cd_writer.writeAll(name);
@@ -364,7 +364,7 @@ pub const ZipFile = struct {
             return;
         }
 
-        const writer = self.output_buff.writer();
+        const writer = self.output_buff.writer(self.allocator);
 
         const cdh_offset = self.output_buff.items.len;
 
