@@ -125,12 +125,14 @@ pub const ZipFile = struct {
             .extra_len = 0,
         };
 
-        const writer = self.output_buff.writer(self.allocator);
+        var buff = std.Io.Writer.Allocating.fromArrayList(self.allocator, &self.output_buff);
+        defer buff.deinit();
+        var writer = &buff.writer;
 
         switch (options.compression_method) {
             .store => {
                 local_header.compressed_size = @intCast(content.len);
-                try writer.writeStructEndian(local_header, .little);
+                try writer.writeStruct(local_header, .little);
                 try writer.writeAll(name);
                 try writer.writeAll(content);
             },
@@ -176,7 +178,7 @@ pub const ZipFile = struct {
 
                 local_header.compressed_size = @intCast(compress_buffer.items.len);
 
-                try writer.writeStructEndian(local_header, .little);
+                try writer.writeStruct(local_header, .little);
                 try writer.writeAll(name);
                 try writer.writeAll(compress_buffer.items);
             },
@@ -220,7 +222,7 @@ pub const ZipFile = struct {
 
                 local_header.compressed_size = @intCast(compress_buffer.items.len);
 
-                try writer.writeStructEndian(local_header, .little);
+                try writer.writeStruct(local_header, .little);
                 try writer.writeAll(name);
                 try writer.writeAll(compress_buffer.items);
             },
@@ -281,7 +283,7 @@ pub const ZipFile = struct {
 
                 local_header.compressed_size = @as(u32, @intCast(compress_buffer.items.len)) + 4 + propery_size;
 
-                try writer.writeStructEndian(local_header, .little);
+                try writer.writeStruct(local_header, .little);
                 try writer.writeAll(name);
                 try writer.writeByte(@intCast(c.LZMA_VERSION_MAJOR));
                 try writer.writeByte(@intCast(c.LZMA_VERSION_MINOR));
@@ -323,7 +325,7 @@ pub const ZipFile = struct {
 
                 local_header.compressed_size = @intCast(compress_buffer.items.len);
 
-                try writer.writeStructEndian(local_header, .little);
+                try writer.writeStruct(local_header, .little);
                 try writer.writeAll(name);
                 try writer.writeAll(compress_buffer.items);
             },
@@ -331,6 +333,8 @@ pub const ZipFile = struct {
                 return ZipFileError.UnsupportedCompressionMethod;
             },
         }
+
+        self.output_buff = buff.toArrayList();
 
         const cd_header = CentralDirectoryFileHeader{
             .signature = std.zip.central_file_header_sig,
@@ -352,11 +356,15 @@ pub const ZipFile = struct {
             .local_file_header_offset = local_file_header_offset,
         };
 
-        const cd_writer = self.cd_buff.writer(self.allocator);
+        var cd_buff = std.Io.Writer.Allocating.fromArrayList(self.allocator, &self.cd_buff);
+        defer cd_buff.deinit();
+        const cd_writer = &cd_buff.writer;
 
-        try cd_writer.writeStructEndian(cd_header, .little);
+        try cd_writer.writeStruct(cd_header, .little);
         try cd_writer.writeAll(name);
         self.file_count += 1;
+
+        self.cd_buff = cd_buff.toArrayList();
     }
 
     pub fn finish(self: *Self) !void {
@@ -364,11 +372,8 @@ pub const ZipFile = struct {
             return;
         }
 
-        const writer = self.output_buff.writer(self.allocator);
-
         const cdh_offset = self.output_buff.items.len;
-
-        try writer.writeAll(self.cd_buff.items);
+        try self.output_buff.appendSlice(self.allocator, self.cd_buff.items);
 
         const eocd = std.zip.EndRecord{
             .signature = std.zip.end_record_sig,
@@ -381,7 +386,12 @@ pub const ZipFile = struct {
             .comment_len = 0,
         };
 
-        try writer.writeStructEndian(eocd, .little);
+        var buff = std.Io.Writer.Allocating.init(self.allocator);
+        defer buff.deinit();
+        var writer = &buff.writer;
+        try writer.writeStruct(eocd, .little);
+
+        try self.output_buff.appendSlice(self.allocator, buff.written());
         self.finished = true;
     }
 };
