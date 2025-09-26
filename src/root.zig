@@ -386,12 +386,12 @@ pub const ZipFile = struct {
             .comment_len = 0,
         };
 
-        var buff = std.Io.Writer.Allocating.init(self.allocator);
+        var buff = std.Io.Writer.Allocating.fromArrayList(self.allocator, &self.output_buff);
         defer buff.deinit();
         var writer = &buff.writer;
         try writer.writeStruct(eocd, .little);
 
-        try self.output_buff.appendSlice(self.allocator, buff.written());
+        self.output_buff = buff.toArrayList();
         self.finished = true;
     }
 };
