@@ -1,10 +1,5 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("time.h");
-    @cInclude("zlib.h");
-    @cInclude("bzlib.h");
-    @cInclude("lzma.h");
-});
+const c = @import("c");
 const testing = std.testing;
 const assert = std.debug.assert;
 
@@ -20,6 +15,7 @@ pub const ZipFileError = error{
 };
 
 const CHUNK = 16384;
+const default_file_mode: u32 = 0o100644;
 
 pub const CompressionMethod = enum(u16) {
     store = 0,
@@ -82,7 +78,7 @@ pub const ZipFile = struct {
 
     const Options = struct {
         compression_method: CompressionMethod = .deflate,
-        mode: std.fs.File.Mode = 0o644 | std.c.S.IFREG,
+        mode: u32 = default_file_mode,
     };
 
     pub fn init(allocator: std.mem.Allocator) Self {
@@ -407,10 +403,11 @@ test "can init/deinit" {
     try f.addFile("test5.txt", "xz content\n", .{ .compression_method = .xz });
     try f.finish();
 
-    var file = try std.fs.cwd().createFile("test.zip", .{});
-    defer file.close();
+    const io = std.testing.io;
+    var file = try std.Io.Dir.cwd().createFile(io, "test.zip", .{});
+    defer file.close(io);
     var buffer: [4096]u8 = undefined;
-    var buffered = file.writer(&buffer);
+    var buffered = file.writer(io, &buffer);
     const writer = &buffered.interface;
     try writer.writeAll(f.output_buff.items);
     try writer.flush();
